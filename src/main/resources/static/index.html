@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>University Consultation System</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1 { text-align: center; }
+        .hidden { display: none; }
+        .calendar { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+        .calendar th, .calendar td { border: 1px solid #000; text-align: center; padding: 5px; width: 14%; height: 50px; }
+        .calendar th { background-color: #eee; }
+        .time-column { width: 60px; }
+        .red { background-color: red; color: white; }
+        .green { background-color: green; color: white; }
+        .navigation { text-align: center; margin: 10px 0; }
+    </style>
+</head>
+<body>
+
+<h1>University Consultation System</h1>
+
+<label for="sNumber">s-number: </label>
+<input type="text" id="sNumber" placeholder="Enter your s-number">
+<button id="checkSNumber">Check</button>
+
+<div id="calendarContainer" class="hidden">
+    <h2>Professor: <select id="professorSelect"></select></h2>
+
+    <div class="navigation">
+        <button id="prevWeek">&lt;</button>
+        <span id="weekLabel">Weeks:</span>
+        <button id="nextWeek">&gt;</button>
+    </div>
+
+    <table class="calendar" id="mainCalendar">
+        <thead>
+        <tr>
+            <th class="time-column"></th>
+            <th id="mon"></th>
+            <th id="tue"></th>
+            <th id="wed"></th>
+            <th id="thu"></th>
+            <th id="fri"></th>
+        </tr>
+        </thead>
+        <tbody id="calendarBody"></tbody>
+    </table>
+
+    <h2>Your Consultations</h2>
+    <table class="calendar" id="studentCalendar">
+        <thead>
+        <tr>
+            <th class="time-column"></th>
+            <th id="mon2"></th>
+            <th id="tue2"></th>
+            <th id="wed2"></th>
+            <th id="thu2"></th>
+            <th id="fri2"></th>
+        </tr>
+        </thead>
+        <tbody id="studentCalendarBody"></tbody>
+    </table>
+</div>
+<script>
+    let selectedProfessor = null;
+    let selectedSNumber = '';
+    let currentWeekOffset = 0;
+    let allProfessors = [];
+
+    const hours = Array.from({ length: 12 }, (_, i) => i + 8); // 8-19
+    const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+
+
+    function getDayIndex(date) {
+        const day = date.getDay();
+        return day === 0 ? -1 : day - 1;
+    }
+
+
+    function initializeCalendarGrid(calendarBodyElement, isProfessorCalendar = false) {
+        calendarBodyElement.innerHTML = '';
+
+        hours.forEach(hour => {
+            const row = document.createElement('tr');
+            const timeCell = document.createElement('td');
+            timeCell.innerText = `${hour}:00`;
+            row.appendChild(timeCell);
+
+            for (let i = 0; i < 5; i++) {
+                const cell = document.createElement('td');
+                cell.dataset.day = i;
+                cell.dataset.hour = hour;
+
+                if (isProfessorCalendar) {
+                    cell.addEventListener('click', (e) => handleProfessorCalendarClick(e, cell));
+                    cell.addEventListener('contextmenu', (e) => e.preventDefault());
+                } else {
+                    cell.dataset.professorId = selectedProfessor ? selectedProfessor.id : '';
+                    cell.addEventListener('click', (e) => handleStudentCalendarClick(e, cell));
+                    cell.addEventListener('contextmenu', (e) => handleStudentCalendarClick(e, cell));
+                }
+                row.appendChild(cell);
+            }
+            calendarBodyElement.appendChild(row);
+        });
+    }
+
+
+    async function loadProfessors() {
+        const select = document.getElementById('professorSelect');
+        try {
+            const profsResponse = await fetch(`/api/professors`);
+            if (!profsResponse.ok) {
+                throw new Error(`HTTP error! status: ${profsResponse.status}`);
+            }
+            allProfessors = await profsResponse.json();
+
+            if (allProfessors && allProfessors.length > 0) {
+                select.innerHTML = allProfessors.map(p => `<option value="${p.id}">${p.firstName + " " + p.lastName}</option>`).join('');
+
+
+                selectedProfessor = allProfessors.find(p => p.id === parseInt(select.value));
+
+
+                select.removeEventListener('change', handleProfessorSelectChange);
+
+                select.addEventListener('change', handleProfessorSelectChange);
+            } else {
+                select.innerHTML = '<option value="">No professors found</option>';
+                selectedProfessor = null;
+            }
+        } catch (error) {
+            console.error("Error fetching professors:", error);
+            alert("Failed to load professors. Please try again later.");
+            select.innerHTML = '<option value="">Error loading professors</option>';
+            selectedProfessor = null;
+            throw error;
+        }
+    }
+
+    async function loadProfessorSchedule() {
+        const mainCalendarBody = document.getElementById('calendarBody');
+        initializeCalendarGrid(mainCalendarBody, true);
+
+        if (!selectedProfessor) {
+            console.log("No professor selected, skipping professor schedule load.");
+            return;
+        }
+
+        try {
+            const professorId = selectedProfessor.id;
+
+
+            const [lessonsResponse, consultationsResponse] = await Promise.all([
+                fetch(`/api/professors/${professorId}/lessons?weekOffset=${currentWeekOffset}`),
+                fetch(`/api/professors/${professorId}/consultations?weekOffset=${currentWeekOffset}`)
+            ]);
+
+            let lessons = [];
+            if (lessonsResponse.status === 204) {
+                lessons = [];
+            } else if (!lessonsResponse.ok) {
+                throw new Error(`Failed to load lessons: ${lessonsResponse.status} ${lessonsResponse.statusText}`);
+            } else {
+                lessons = await lessonsResponse.json();
+            }
+
+
+            let consultations = [];
+            if (consultationsResponse.status === 204) {
+                consultations = [];
+            } else if (!consultationsResponse.ok) {
+                throw new Error(`Failed to load consultations: ${consultationsResponse.status} ${consultationsResponse.statusText}`);
+            } else {
+                consultations = await consultationsResponse.json();
+            }
+
+
+            lessons.forEach(lesson => {
+                const date = new Date(lesson.startTime);
+                const dayIndex = getDayIndex(date);
+                const hour = date.getHours();
+                const rowIndex = hour - 8;
+
+                if (dayIndex >= 0 && dayIndex < 5 && rowIndex >= 0 && rowIndex < hours.length) {
+                    const cell = document.querySelector(`#mainCalendar tbody tr:nth-child(${rowIndex + 1}) td:nth-child(${dayIndex + 2})`);
+                    if (cell) {
+                        cell.classList.add('red');
+                        cell.innerText = `Lesson\nRoom: ${lesson.roomNumber || 'TBD'}`;
+                    }
+                }
+            });
+
+            consultations.forEach(consultation => {
+                const date = new Date(consultation.startTime);
+                const dayIndex = getDayIndex(date);
+                const hour = date.getHours();
+                const rowIndex = hour - 8;
+
+                if (dayIndex >= 0 && dayIndex < 5 && rowIndex >= 0 && rowIndex < hours.length) {
+                    const cell = document.querySelector(`#mainCalendar tbody tr:nth-child(${rowIndex + 1}) td:nth-child(${dayIndex + 2})`);
+                    if (cell) {
+                        cell.classList.add('red');
+                        cell.innerText = `Booked\nRoom: ${consultation.roomNumber || 'TBD'}`;
+                    }
+                }
+            });
+
+        } catch (err) {
+            console.error('Error loading professor schedule (lessons or consultations):', err);
+            mainCalendarBody.innerHTML = `<tr><td colspan="6">Error loading professor's schedule.</td></tr>`;
+            throw err;
+        }
+    }
+
+
+    async function loadStudentConsultations() {
+        const studentCalendarBody = document.getElementById('studentCalendarBody');
+        initializeCalendarGrid(studentCalendarBody, false);
+
+        if (!selectedSNumber) {
+            console.log("No s-number selected, skipping student consultations load.");
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/consultations/${selectedSNumber}?weekOffset=${currentWeekOffset}`);
+            if (!response.ok) {
+                throw new Error(`Failed to load student consultations: ${response.status}`);
+            }
+            const data = await response.json();
+
+            data.forEach(consultation => {
+                const date = new Date(consultation.startTime);
+                const dayIndex = getDayIndex(date);
+                const hour = date.getHours();
+                const rowIndex = hour - 8;
+
+                if (dayIndex >= 0 && dayIndex < 5 && rowIndex >= 0 && rowIndex < hours.length) {
+                    const cell = document.querySelector(`#studentCalendar tbody tr:nth-child(${rowIndex + 1}) td:nth-child(${dayIndex + 2})`);
+                    if (cell) {
+                        cell.classList.add('green');
+                        cell.dataset.consultationId = consultation.id;
+                        cell.dataset.professorId = consultation.professorId;
+                        cell.dataset.sNumber = consultation.sNumber;
+                        cell.dataset.startTime = consultation.startTime;
+
+                        let professorName = 'Unknown Professor';
+                        const professor = allProfessors.find(p => p.id === consultation.professorId);
+                        if (professor) {
+                            professorName = `${professor.firstName} ${professor.lastName}`;
+                        } else {
+                            console.warn(`Professor with ID ${consultation.professorId} not found in lookup table.`);
+                        }
+
+                        cell.innerText = `Professor: ${professorName}\nRoom: ${consultation.roomNumber || 'TBD'}`;
+                    }
+                }
+            });
+        } catch (err) {
+            console.error('Error loading student consultations:', err);
+            studentCalendarBody.innerHTML = `<tr><td colspan="6">Error loading your consultations.</td></tr>`;
+            throw err;
+        }
+    }
+
+
+    async function loadCalendars() {
+
+        const today = new Date();
+        const monday = new Date(today.setDate(today.getDate() - today.getDay() + 1 + currentWeekOffset * 7));
+        for (let i = 0; i < 5; i++) {
+            const date = new Date(monday);
+            date.setDate(monday.getDate() + i);
+            document.getElementById(['mon', 'tue', 'wed', 'thu', 'fri'][i]).innerText =
+                `${date.toLocaleDateString('en-GB')} (${days[i]})`;
+            document.getElementById(['mon2', 'tue2', 'wed2', 'thu2', 'fri2'][i]).innerText =
+                `${date.toLocaleDateString('en-GB')} (${days[i]})`;
+        }
+
+
+        try {
+            await Promise.all([
+                loadProfessorSchedule(),
+                loadStudentConsultations()
+            ]);
+        } catch (error) {
+            console.error("An error occurred during calendar loading:", error);
+
+        }
+    }
+
+
+    document.getElementById('checkSNumber').addEventListener('click', async () => {
+        const sNumberInput = document.getElementById('sNumber').value;
+
+        if (sNumberInput.trim() === '') {
+            alert('Please enter your s-number.');
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/students/${sNumberInput}`);
+            if (!response.ok) {
+                if (response.status === 404) {
+                    throw new Error('Student with this s-number does not exist.');
+                }
+                throw new Error(`Server error while validating s-number: ${response.status}`);
+            }
+            const exists = await response.json();
+
+            if (exists) {
+                selectedSNumber = sNumberInput;
+                document.getElementById('calendarContainer').classList.remove('hidden');
+
+
+                await loadProfessors();
+                await loadCalendars();
+            } else {
+                alert('Student with this s-number does not exist. Please try again.');
+                document.getElementById('calendarContainer').classList.add('hidden');
+            }
+        } catch (error) {
+            console.error('Error validating s-number or loading initial data:', error);
+            alert(error.message || 'An error occurred. Please try again later.');
+            document.getElementById('calendarContainer').classList.add('hidden');
+        }
+    });
+
+    document.getElementById('prevWeek').addEventListener('click', async () => {
+        currentWeekOffset--;
+        await loadCalendars();
+    });
+
+    document.getElementById('nextWeek').addEventListener('click', async () => {
+        currentWeekOffset++;
+        await loadCalendars();
+    });
+
+    async function handleProfessorSelectChange() {
+        selectedProfessor = allProfessors.find(p => p.id === parseInt(this.value));
+        await loadCalendars();
+    }
+
+    async function handleProfessorCalendarClick(e, cell) {
+
+        if (cell.classList.contains('red')) {
+            return;
+        }
+
+        if (!selectedProfessor) {
+            alert('Please select a professor first.');
+            return;
+        }
+
+        if (e.button === 0) {
+            if (confirm('Book this slot?')) {
+                const hour = cell.dataset.hour;
+                const day = cell.dataset.day;
+
+                const selectedDate = new Date();
+                selectedDate.setDate(selectedDate.getDate() - selectedDate.getDay() + 1 + currentWeekOffset * 7 + parseInt(day));
+                selectedDate.setHours(hour, 0, 0, 0);
+
+                if (selectedDate < new Date()) {
+                    alert('Cannot book a consultation in the past.');
+                    return;
+                }
+
+                const requestBody = {
+                    sNumber: parseInt(selectedSNumber),
+                    professorId: selectedProfessor.id,
+                    startTime: selectedDate.toISOString()
+                };
+
+                try {
+                    const response = await fetch('/api/consultations', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(requestBody)
+                    });
+
+                    if (response.ok) {
+                        alert('Consultation booked successfully!');
+                        await loadCalendars();
+                    } else {
+                        const errorData = await response.json();
+                        throw new Error(errorData.message || 'Booking failed.');
+                    }
+                } catch (error) {
+                    console.error('Error booking consultation:', error);
+                    alert(error.message || 'Error booking consultation. Please try again.');
+                }
+            }
+        }
+    }d
+
+    async function handleStudentCalendarClick(e, cell) {
+
+        if (!cell.classList.contains('green')) {
+            return;
+        }
+
+
+        if (e.button === 2) {
+            alert('Reschedule mode: Now left-click on an **empty** cell in either calendar to select new time.');
+
+            const originalCell = cell;
+
+            const rescheduleClickHandler = async function(ev) {
+
+                const target = ev.target;
+
+                if (target.tagName === 'TD' && !target.classList.contains('red') && !target.classList.contains('green')) {
+                    const newHour = target.dataset.hour;
+                    const newDay = target.dataset.day;
+
+                    const newProposedDate = new Date();
+                    newProposedDate.setDate(newProposedDate.getDate() - newProposedDate.getDay() + 1 + currentWeekOffset * 7 + parseInt(newDay));
+                    newProposedDate.setHours(newHour, 0, 0, 0);
+
+                    if (newProposedDate < new Date()) {
+                        alert('Cannot reschedule to a past time slot.');
+                        document.removeEventListener('click', rescheduleClickHandler);//here
+                        return;
+                    }
+
+                    if (confirm('Reschedule consultation to this time slot?')) {
+                        const consultationId = originalCell.dataset.consultationId;
+                        const professorId = originalCell.dataset.professorId;
+                        const sNumber = originalCell.dataset.sNumber;
+
+                        try {
+                            const response = await fetch(`/api/consultations/${consultationId}`, {
+                                method: 'PUT',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    newStartTime: newProposedDate.toISOString(),
+                                    professorId: parseInt(professorId),
+                                    sNumber: parseInt(sNumber)
+                                })
+                            });
+
+                            if (response.ok) {
+                                alert('Consultation rescheduled successfully!');
+                                await loadCalendars(); // Reload both calendars
+
+                            } else {
+                                const errorData = await response.json();
+                                throw new Error(errorData.message || 'Rescheduling failed. Unknown reason.');
+                            }
+                        } catch (error) {
+                            console.error('Error rescheduling consultation:', error);
+                            alert(error.message || 'Error rescheduling consultation. Please try again.');
+                        } finally {
+                            document.removeEventListener('click', rescheduleClickHandler);
+                        }
+                    } else {
+                        document.removeEventListener('click', rescheduleClickHandler);
+                    }
+                } else if (target.tagName === 'TD') {
+                    alert('Please select an empty slot.');
+                }
+            };
+
+            document.addEventListener('click', rescheduleClickHandler);
+        }
+        else if (e.button === 0) {
+            if (confirm('Delete this consultation?')) {
+                const consultationId = cell.dataset.consultationId;
+                try {
+                    const response = await fetch(`/api/consultations/${consultationId}`, { method: 'DELETE' });
+                    if (response.ok) {
+                        alert('Consultation deleted successfully!');
+                        await loadCalendars();
+                    } else {
+                        const errorData = await response.json();
+                        throw new Error(errorData.message || 'Error deleting consultation.');
+                    }
+                } catch (err) {
+                    console.error('Error deleting consultation:', err);
+                    alert(err.message || 'An error occurred while deleting the consultation.');
+                }
+            }
+        }
+    }
+
+    document.addEventListener('contextmenu', function(e) {
+        e.preventDefault();
+    });
+
+</script>
+</body>
+</html>
